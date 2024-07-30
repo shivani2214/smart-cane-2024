@@ -1,0 +1,160 @@
+#include <WiFi.h>    
+#include <HTTPClient.h>
+#include <UrlEncode.h>
+#include <WebServer.h>
+#include <WifiCam.hpp>
+
+// your wifi and password
+const char* ssid = "";
+const char* password = "";
+
+// +international_country_code + phone number
+// Portugal +351, example: +351912345678
+String phoneNumber = "";
+String apiKey = "";
+
+// define GPIO pins for the camera
+#define PWDN_GPIO_NUM  32
+#define RESET_GPIO_NUM -1
+#define XCLK_GPIO_NUM  0
+#define SIOD_GPIO_NUM  26
+#define SIOC_GPIO_NUM  27
+#define Y9_GPIO_NUM    35
+#define Y8_GPIO_NUM    34
+#define Y7_GPIO_NUM    39
+#define Y6_GPIO_NUM    36
+#define Y5_GPIO_NUM    21
+#define Y4_GPIO_NUM    19
+#define Y3_GPIO_NUM    18
+#define Y2_GPIO_NUM    5
+#define VSYNC_GPIO_NUM 25
+#define HREF_GPIO_NUM  23
+#define PCLK_GPIO_NUM  22
+
+esp32cam::Resolution initialResolution;
+
+// create a web server object listening on port 80
+WebServer server(80);
+
+// finds and stores resolutions for low, medium, and high quality images
+static auto loRes = esp32cam::Resolution::find(320, 240);
+static auto midRes = esp32cam::Resolution::find(350, 530);
+static auto hiRes = esp32cam::Resolution::find(800, 600);
+
+void serveJpg()
+{
+  auto frame = esp32cam::capture();
+  if (frame == nullptr) {
+    Serial.println("CAPTURE FAIL");
+    server.send(503, "", "");
+    return;
+  }
+  Serial.printf("CAPTURE OK %dx%d %db\n", frame->getWidth(), frame->getHeight(), static_cast<int>(frame->size()));
+  
+  server.setContentLength(frame->size());
+  server.send(200, "image/jpeg");
+  WiFiClient client = server.client();
+  frame->writeTo(client);
+}
+
+void handleJpgLo()
+{
+  if (!esp32cam::Camera.changeResolution(esp32cam::Resolution::find(320, 240))) {
+    Serial.println("SET-LO-RES FAIL");
+  }
+  serveJpg();
+}
+ 
+void handleJpgHi()
+{
+  if (!esp32cam::Camera.changeResolution(esp32cam::Resolution::find(800, 600))) {
+    Serial.println("SET-HI-RES FAIL");
+  }
+  serveJpg();
+}
+ 
+void handleJpgMid()
+{
+  if (!esp32cam::Camera.changeResolution(esp32cam::Resolution::find(350, 530))) {
+    Serial.println("SET-MID-RES FAIL");
+  }
+  serveJpg();
+}
+
+void addRequestHandlers() {
+  server.on("/cam-lo.jpg", handleJpgLo);
+  server.on("/cam-hi.jpg", handleJpgHi);
+  server.on("/cam-mid.jpg", handleJpgMid);
+}
+
+void sendMessage(String message){
+
+  // Data to send with HTTP POST
+  String url = "https://api.callmebot.com/whatsapp.php?phone=" + phoneNumber + "&apikey=" + apiKey + "&text=" + urlEncode(message);    
+  HTTPClient http;
+  http.begin(url);
+
+  // Specify content-type header
+  http.addHeader("Content-Type", "application/x-www-form-urlencoded");
+  
+  // Send HTTP POST request
+  int httpResponseCode = http.POST(url);
+  if (httpResponseCode == 200){
+    Serial.print("Message sent successfully");
+  }
+  else{
+    Serial.println("Error sending the message");
+    Serial.print("HTTP response code: ");
+    Serial.println(httpResponseCode);
+  }
+
+  // Free resources
+  http.end();
+}
+
+void setup() {
+  Serial.begin(115200);
+
+  WiFi.begin(ssid, password);
+  Serial.println("Connecting");
+  while(WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println("");
+  Serial.print("Connected to WiFi network with IP Address: ");
+  Serial.println(WiFi.localIP());
+
+  // Send Message to WhatsAPP
+  sendMessage("Hello from ESP32!");
+
+  // initialize camera
+  {
+    using namespace esp32cam; // prefix everything with esp32cam::
+
+    initialResolution = Resolution::find(1024, 768); // set initalResolution to a Resolution object 1024 by 768
+
+    Config cfg; // create Config object to hold camera settings
+    cfg.setPins(pins::AiThinker); // sets pin configuration of cfg to match the AiThinker pin configuration
+    cfg.setResolution(initialResolution); // set resolution of cfg to 1024x768 pixels
+    cfg.setJpeg(80);
+
+    bool ok = Camera.begin(cfg); // initializes camera with cfg settings
+    if (!ok) {
+      Serial.println("camera initialize failure");
+      delay(5000);
+      ESP.restart();
+    }
+    Serial.println("camera initialize success");
+  }
+
+  server.on("/cam-lo.jpg", handleJpgLo);
+  server.on("/cam-hi.jpg", handleJpgHi);
+  server.on("/cam-mid.jpg", handleJpgMid);
+ 
+  server.begin();
+}
+
+void loop() {
+  server.handleClient();
+}
